@@ -15,14 +15,18 @@ anything — it just watches those files:
    60 seconds.
 2. When a session file has gone quiet for 5 minutes (i.e. the episode looks finished), it pulls the
    new user/assistant messages, files touched, and commands run since the last check.
-3. It sends that digest to a headless `claude -p --model haiku` call (using your existing Claude
-   Code login — no separate API key needed) to get a 2-3 sentence summary.
-4. It appends one JSON record to `~/.claude-session-log/history.jsonl`: date, time range, project
+3. Trivial episodes (a couple of one-off messages with no files touched and no commands run) are
+   skipped — no summarization call, no log entry, just noise avoided.
+4. It sends the remaining digest to a headless `claude -p --model haiku` call (using your existing
+   Claude Code login — no separate API key needed) to get a 2-3 sentence summary.
+5. It appends one JSON record to `~/.claude-session-log/history.jsonl`: date, time range, project
    path, git branch, files touched, and the summary.
 
-The daemon excludes its own summarization calls from being watched (no recursive loop), and never
-touches or uploads anything beyond the same Anthropic API calls Claude Code already makes on your
-behalf.
+The daemon excludes its own summarization calls from being watched (no recursive loop), reads new
+transcript bytes by exact offset rather than re-scanning whole files, and never touches or uploads
+anything beyond the same Anthropic API calls Claude Code already makes on your behalf.
+`history.jsonl` and `state.json` are created `chmod 600` (owner-only) since transcripts can contain
+secrets typed into commands.
 
 ## Requirements
 

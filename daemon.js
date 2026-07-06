@@ -17,6 +17,7 @@ const SCRATCH_DIR = path.join(LOG_DIR, '.scratch');
 const POLL_INTERVAL_MS = 60_000;
 const IDLE_THRESHOLD_MS = 5 * 60_000; // a file must be untouched this long before we treat it as "episode ended"
 const SUMMARY_MODEL = 'haiku';
+const MIN_USER_MESSAGES = 2; // episodes with fewer real user turns and no files/commands touched are skipped as trivial
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 fs.mkdirSync(SCRATCH_DIR, { recursive: true });
@@ -25,11 +26,17 @@ function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
+// history/state can contain secrets typed into commands or file contents — keep them owner-only.
+function secure(p) {
+  try { fs.chmodSync(p, 0o600); } catch { /* best effort */ }
+}
+
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch { return {}; }
 }
 function saveState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  secure(STATE_PATH);
 }
 
 let state = loadState();
@@ -138,31 +145,67 @@ function summarize(prompt) {
 
 function appendHistory(entry) {
   fs.appendFileSync(HISTORY_PATH, JSON.stringify(entry) + '\n');
+  secure(HISTORY_PATH);
+}
+
+// Reads exactly the new byte range [start, end) of filePath. Using byte offsets
+// (not JS string .length, which counts UTF-16 units) keeps this correct for any
+// transcript containing non-ASCII text, and lets us skip already-processed bytes
+// entirely instead of re-reading the whole file every tick.
+function readRange(filePath, start, end) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(end - start);
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+    return buffer;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 async function processFile(filePath) {
   const st = state[filePath] || { offset: 0 };
-  let content;
-  try { content = fs.readFileSync(filePath, 'utf8'); } catch { return; }
-  if (content.length <= st.offset) return;
+  let size;
+  try { size = fs.statSync(filePath).size; } catch { return; }
 
-  const newContent = content.slice(st.offset);
-  const lines = newContent.split('\n').filter(Boolean);
+  if (size < st.offset) {
+    log(`transcript shrank (rewritten/compacted?) — resetting offset: ${filePath}`);
+    st.offset = 0;
+  }
+  if (size <= st.offset) return;
+
+  const buf = readRange(filePath, st.offset, size);
+  const lastNewline = buf.lastIndexOf(10); // '\n'
+  if (lastNewline === -1) return; // no complete line yet — wait for more data next tick
+
+  const completeBuf = buf.subarray(0, lastNewline + 1);
+  const newOffset = st.offset + completeBuf.length;
+  const advance = () => { state[filePath] = { offset: newOffset }; saveState(state); };
+
+  const lines = completeBuf.toString('utf8').split('\n').filter(Boolean);
   const parsed = [];
   for (const line of lines) {
-    try { parsed.push(JSON.parse(line)); } catch { /* skip partial/malformed trailing line */ }
+    try { parsed.push(JSON.parse(line)); } catch { /* skip malformed line */ }
   }
-  if (!parsed.length) return;
+  if (!parsed.length) { advance(); return; }
 
   const digest = extractDigest(parsed);
   if (!digest.userTexts.length && !digest.assistantTexts.length) {
-    state[filePath] = { offset: content.length };
-    saveState(state);
+    advance();
+    return;
+  }
+
+  const trivial = digest.userTexts.length < MIN_USER_MESSAGES
+    && digest.filesTouched.length === 0
+    && digest.commands.length === 0;
+  if (trivial) {
+    log(`skipped trivial episode: ${digest.cwd}`);
+    advance();
     return;
   }
 
   const summary = await summarize(buildPrompt(digest));
-  if (summary === null) return; // leave offset alone, retry next tick
+  if (summary === null) return; // leave offset alone, retry this same range next tick
 
   appendHistory({
     date: (digest.lastTs || new Date().toISOString()).slice(0, 10),
@@ -177,8 +220,7 @@ async function processFile(filePath) {
   });
   log(`logged episode: ${digest.cwd} :: ${summary.slice(0, 80)}`);
 
-  state[filePath] = { offset: content.length };
-  saveState(state);
+  advance();
 }
 
 async function tick() {

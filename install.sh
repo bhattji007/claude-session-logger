@@ -49,6 +49,8 @@ cat > "$PLIST_PATH" <<PLIST
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>$LOG_DIR/logs/daemon.out.log</string>
   <key>StandardErrorPath</key>
