@@ -28,6 +28,18 @@ anything beyond the same Anthropic API calls Claude Code already makes on your b
 `history.jsonl` and `state.json` are created `chmod 600` (owner-only) since transcripts can contain
 secrets typed into commands.
 
+## Self-throttling
+
+There's no documented or locally-queryable way to read Anthropic's actual live rate-limit
+percentage — the usage bar Claude Code's interactive UI shows comes from a private backend call,
+not something exposed to scripts. So instead of guessing at that number, the daemon tracks its
+**own** spend: every summarization call reports an exact `total_cost_usd`, which gets logged to a
+rolling 5-hour ledger (`~/.claude-session-log/usage-window.json`). Once that ledger crosses
+**$0.50 in trailing 5 hours**, the daemon pauses itself — no new summarization calls — until enough
+old entries age out of the window to drop back under budget. Nothing is lost while paused; episodes
+just wait for their next tick once the budget frees up. Adjust `USAGE_BUDGET_USD` /
+`USAGE_WINDOW_MS` in `daemon.js` to change the cap.
+
 ## Requirements
 
 - macOS (uses `launchd`; adapt `daemon.js` to systemd/cron for Linux/other)

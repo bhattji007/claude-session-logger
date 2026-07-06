@@ -12,12 +12,21 @@ const PROJECTS_DIR = path.join(HOME, '.claude', 'projects');
 const LOG_DIR = path.join(HOME, '.claude-session-log');
 const STATE_PATH = path.join(LOG_DIR, 'state.json');
 const HISTORY_PATH = path.join(LOG_DIR, 'history.jsonl');
+const USAGE_PATH = path.join(LOG_DIR, 'usage-window.json');
 const SCRATCH_DIR = path.join(LOG_DIR, '.scratch');
 
 const POLL_INTERVAL_MS = 60_000;
 const IDLE_THRESHOLD_MS = 5 * 60_000; // a file must be untouched this long before we treat it as "episode ended"
 const SUMMARY_MODEL = 'haiku';
 const MIN_USER_MESSAGES = 2; // episodes with fewer real user turns and no files/commands touched are skipped as trivial
+
+// Self-throttle: there's no documented/local way to read Anthropic's actual live
+// rate-limit percentage, so instead the daemon tracks its OWN spend (exact cost
+// reported per headless call) over a rolling window and pauses itself once that
+// crosses a budget — capping how much of your plan's quota this tool can eat,
+// independent of whatever your real session limit happens to be.
+const USAGE_WINDOW_MS = 5 * 60 * 60 * 1000; // 5 hours, rolling
+const USAGE_BUDGET_USD = 0.50;
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 fs.mkdirSync(SCRATCH_DIR, { recursive: true });
@@ -40,6 +49,33 @@ function saveState(state) {
 }
 
 let state = loadState();
+
+function loadUsageWindow() {
+  try { return JSON.parse(fs.readFileSync(USAGE_PATH, 'utf8')); } catch { return []; }
+}
+function saveUsageWindow(entries) {
+  fs.writeFileSync(USAGE_PATH, JSON.stringify(entries));
+  secure(USAGE_PATH);
+}
+
+let usageWindow = loadUsageWindow();
+let throttled = false; // tracked so we log transitions instead of spamming every tick
+
+function pruneUsageWindow(now) {
+  const cutoff = now - USAGE_WINDOW_MS;
+  usageWindow = usageWindow.filter((e) => e.ts > cutoff);
+}
+
+function currentSpend(now) {
+  pruneUsageWindow(now);
+  return usageWindow.reduce((sum, e) => sum + e.cost, 0);
+}
+
+function recordSpend(cost, now) {
+  usageWindow.push({ ts: now, cost });
+  pruneUsageWindow(now);
+  saveUsageWindow(usageWindow);
+}
 
 // Our own headless summarizer calls run with cwd=SCRATCH_DIR, which lives under a
 // directory containing "claude-session-log" — exclude anything matching that so we
@@ -120,12 +156,14 @@ function buildPrompt(digest) {
   return parts.join('\n');
 }
 
+// Resolves { text, cost } on success (cost is the exact total_cost_usd Claude Code
+// itself reports for this call), or null on failure.
 function summarize(prompt) {
   return new Promise((resolve) => {
     const child = spawn('claude', [
       '-p', prompt,
       '--model', SUMMARY_MODEL,
-      '--output-format', 'text',
+      '--output-format', 'json',
       '--setting-sources', '',
     ], { cwd: SCRATCH_DIR });
     let out = '', err = '';
@@ -135,8 +173,14 @@ function summarize(prompt) {
       if (code !== 0) {
         log(`summarize failed (code ${code}): ${err.slice(0, 300)}`);
         resolve(null);
-      } else {
-        resolve(out.trim());
+        return;
+      }
+      try {
+        const parsed = JSON.parse(out);
+        resolve({ text: (parsed.result || '').trim(), cost: parsed.total_cost_usd || 0 });
+      } catch (e) {
+        log(`summarize: failed to parse JSON output: ${e.message}`);
+        resolve(null);
       }
     });
     child.on('error', (e) => { log(`summarize spawn error: ${e.message}`); resolve(null); });
@@ -204,8 +248,24 @@ async function processFile(filePath) {
     return;
   }
 
-  const summary = await summarize(buildPrompt(digest));
-  if (summary === null) return; // leave offset alone, retry this same range next tick
+  const now = Date.now();
+  const spend = currentSpend(now);
+  if (spend >= USAGE_BUDGET_USD) {
+    if (!throttled) {
+      log(`self-throttle: spent $${spend.toFixed(4)} of $${USAGE_BUDGET_USD} in trailing 5h window — pausing until it rolls off`);
+      throttled = true;
+    }
+    return; // leave offset alone, retry this same range once budget frees up
+  }
+  if (throttled) {
+    log(`self-throttle: budget freed up ($${spend.toFixed(4)} of $${USAGE_BUDGET_USD}) — resuming`);
+    throttled = false;
+  }
+
+  const summarized = await summarize(buildPrompt(digest));
+  if (summarized === null) return; // leave offset alone, retry this same range next tick
+  recordSpend(summarized.cost, Date.now());
+  const summary = summarized.text;
 
   appendHistory({
     date: (digest.lastTs || new Date().toISOString()).slice(0, 10),

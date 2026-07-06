@@ -2,5 +2,6 @@
 node_modules/
 history.jsonl
 state.json
+usage-window.json
 logs/
 .scratch/
