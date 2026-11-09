@@ -18,15 +18,16 @@ if [ "$(uname)" != "Darwin" ]; then
 fi
 
 LOG_DIR="$HOME/.claude-session-log"
-SKILL_DIR="$HOME/.claude/skills/session-history"
+SKILL_DIR="$HOME/.claude/skills/recall"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LABEL="com.claude-session-logger"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LABEL.plist"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+rm -rf "$HOME/.claude/skills/session-history" # skill was renamed to recall
 mkdir -p "$LOG_DIR/.scratch" "$LOG_DIR/logs" "$SKILL_DIR" "$LAUNCH_AGENTS_DIR"
 cp "$SCRIPT_DIR/daemon.js" "$LOG_DIR/daemon.js"
-cp "$SCRIPT_DIR/skills/session-history/SKILL.md" "$SKILL_DIR/SKILL.md"
+cp "$SCRIPT_DIR/skills/recall/SKILL.md" "$SKILL_DIR/SKILL.md"
 
 cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
