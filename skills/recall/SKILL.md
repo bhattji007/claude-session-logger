@@ -1,7 +1,6 @@
 ---
-name: session-history
+name: recall
 description: Query the cross-machine Claude Code session history log at ~/.claude-session-log/history.jsonl — what was worked on, when, and in which project, with short LLM-written summaries per session. Use whenever the user asks what they did on a given day, wants a recap of recent Claude Code activity, asks about work on a specific project/repo, or references "what did I do in that session."
-trigger: /recall
 ---
 
 # /recall — Claude Code session history

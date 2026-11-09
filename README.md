@@ -55,7 +55,7 @@ cd claude-session-logger
 ```
 
 This copies `daemon.js` to `~/.claude-session-log/`, installs the `/recall` skill to
-`~/.claude/skills/session-history/`, generates a `launchd` plist with paths detected for your
+`~/.claude/skills/recall/`, generates a `launchd` plist with paths detected for your
 machine, and starts the service.
 
 ## Usage
@@ -84,7 +84,7 @@ jq -c 'select(.project_cwd | test("my-repo"))' ~/.claude-session-log/history.jso
 ```
 
 Stops and unloads the daemon. Your accumulated history and the skill are left on disk — delete
-`~/.claude-session-log` and `~/.claude/skills/session-history` manually if you want them gone too.
+`~/.claude-session-log` and `~/.claude/skills/recall` manually if you want them gone too.
 
 ## Limitations
 
